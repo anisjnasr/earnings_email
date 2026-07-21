@@ -28,9 +28,9 @@ automatically.
 - **Language:** Python 3.12, **standard library only** (`urllib`, `json`, `time`,
   `smtplib`, `email`, `ssl`, `datetime`, `zoneinfo`, `os`, `sys`). No `requests`,
   no third-party packages in the script.
-- **No server / no always-on process.** The whole thing runs as a scheduled
-  **GitHub Actions** job (cron). This is why the "add" action must be a link the
-  email client opens, not an API call the email makes.
+- **No application server / no always-on process.** The data/email job runs as
+  scheduled **GitHub Actions**. A single static GitHub Pages redirect is allowed
+  solely because Gmail Android strips `todoist://` links from email.
 - **Todoist integration is via the `todoist://` quick-add URL scheme only.**
   Do **NOT** call the Todoist REST/Sync API and do **NOT** require a Todoist API
   token. (The old Todoist REST v2 API is deprecated; avoid it entirely.)
@@ -54,6 +54,8 @@ automatically.
 ├── .github/
 │   └── workflows/
 │       └── earnings.yml         # weekly + daily scheduler
+├── docs/
+│   └── add.html                 # static cross-platform Todoist redirect
 └── SPEC.md                      # this document
 ```
 
@@ -84,6 +86,7 @@ PROJECT_NAME   = "Earnings"      # Todoist project for added tasks; "" = Inbox
 EXCHANGES      = "NASDAQ,NYSE"   # US exchanges included
 ACCENT         = "#3BBFCF"       # button colour in the email
 RATE_LIMIT_SLEEP = 1.1           # seconds between Finnhub per-symbol lookups
+TODOIST_REDIRECT_URL = "https://anisjnasr.github.io/earnings_email/add.html"
 ```
 `EXCHANGES` is used to filter Finnhub's profile `exchange` field (it returns full
 names like `"NASDAQ NMS - GLOBAL MARKET"` and `"NEW YORK STOCK EXCHANGE, INC."`).
@@ -166,33 +169,41 @@ Build a dict of qualifiers: `universe[symbol] = {"cap": dollars, "name": name,
 
 ## 8. The Todoist quick-add link (most important detail)
 
-Each stock row contains an anchor whose `href` is Todoist's **mobile add-task
-URL**. Tapping it opens the Todoist app's add-task panel **pre-filled but not
+Each stock row contains a normal HTTPS link to the static GitHub Pages redirect.
+Gmail Android permits HTTPS links but strips `todoist://` links. The redirect
+detects the platform and opens Todoist's add-task panel **pre-filled but not
 submitted** — the user taps Todoist's own add button to confirm.
 
-**Format:**
+**Email link format:**
 ```
-todoist://addtask?content=<ENCODED CONTENT>&date=<ENCODED DATE>&priority=4
+https://anisjnasr.github.io/earnings_email/add.html
+    ?title=<ENCODED TITLE>&date=<ENCODED DATE>&project=<ENCODED PROJECT>
 ```
 
-**Content string (before encoding):**
+**Task title (before encoding):**
 ```
-{SYMBOL} Earnings[ - {SESSION}] #{PROJECT_NAME}
+{SYMBOL} Earnings[ - {SESSION}]
 ```
-- Example content: `NVDA Earnings - AMC #Earnings`
+- Example title: `NVDA Earnings - AMC`
 - Example date: `Jul 24 2026`
-- `todoist://addtask` is Todoist's documented Android/iOS scheme.
-  `todoist://openquickadd` is desktop-only and must not be used for these links.
-- `date` uses Todoist natural-language date syntax (no time), producing an
-  all-day due date. Include the year to avoid ambiguity.
+- Example project: `Earnings`
+- `date` is always the company's **earnings date**, not the day the link is
+  tapped. It has no time, producing an all-day due date.
 - `SESSION` is the uppercased bucket (`BMO`/`AMC`/`DMH`) appended to the task
   **name**; omit the ` - {SESSION}` segment for the `tbd` bucket.
-- Todoist's URL API uses `priority=4` for client-facing **Priority 1**.
 - Note the capital **E** in `Earnings`.
-- If `PROJECT_NAME` is `""`, omit the `#...` segment → task goes to Inbox.
-- URL-encode `content` and `date` separately with
-  `urllib.parse.quote(value, safe="")`, so spaces become `%20` and `#` becomes
-  `%23` (an unencoded `#` becomes a URL fragment and breaks project assignment).
+- URL-encode `title`, `date`, and `project` separately with
+  `urllib.parse.quote(value, safe="")`.
+
+**Redirect behavior (`docs/add.html`):**
+- Android: open an Android `intent://` targeting package `com.todoist`, which
+  resolves to `todoist://addtask?content=...&date=...&priority=4`.
+- iOS: open `todoist://addtask?content=...&date=...&priority=4`.
+- Desktop: open
+  `todoist://openquickadd?content={TITLE} {DATE} p1 #{PROJECT_NAME}`.
+- Mobile `priority=4` and desktop `p1` both mean client-facing **Priority 1**.
+- If automatic external navigation is blocked by an in-app browser, show a
+  visible "Open in Todoist" button as a user-initiated fallback.
 
 No Todoist token, no API call, no network request from the script for this step.
 
@@ -294,8 +305,10 @@ No Todoist token, no API call, no network request from the script for this step.
 ## 14. Known gotchas (call these out to Cursor)
 - **Do not** use the Todoist REST/Sync API or any `Bearer` token for adding
   tasks — the whole design relies on Todoist's `todoist://` URL scheme.
-- Use `todoist://addtask` for Android/iOS email links. The similarly named
-  `todoist://openquickadd` endpoint is desktop-only.
+- Never put `todoist://` directly in the email: Gmail Android strips custom
+  schemes. Link to the HTTPS GitHub Pages redirect instead.
+- The redirect must use `todoist://addtask`/Android intent on mobile and
+  `todoist://openquickadd` on desktop; these endpoints are platform-specific.
 - **Do not** import `requests` or any pip package inside the script; stdlib only.
 - The `#project` in the quick-add content **must be URL-encoded** (`%23`).
 - Gmail SMTP needs an **App Password**, which requires **2-Step Verification**;

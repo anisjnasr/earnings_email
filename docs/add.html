@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Open in Todoist</title>
+</head>
+<body style="margin:0;background:#f5f6f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;color:#171717;">
+  <main style="max-width:480px;margin:64px auto;padding:32px 24px;text-align:center;">
+    <h1 style="font-size:24px;margin:0 0 12px;">Opening Todoist…</h1>
+    <p id="status" style="color:#666;line-height:1.5;margin:0 0 24px;">
+      If Todoist does not open automatically, tap the button below.
+    </p>
+    <a id="open-todoist" href="#"
+       style="display:inline-block;background:#3BBFCF;color:#fff;text-decoration:none;
+              font-size:16px;font-weight:700;padding:14px 22px;border-radius:10px;">
+      Open in Todoist
+    </a>
+  </main>
+
+  <script>
+    (() => {
+      const params = new URLSearchParams(window.location.search);
+      const title = (params.get("title") || "").trim();
+      const date = (params.get("date") || "").trim();
+      const project = (params.get("project") || "").trim();
+      const status = document.getElementById("status");
+      const button = document.getElementById("open-todoist");
+
+      if (!title || !date) {
+        status.textContent = "This Todoist link is missing task information.";
+        button.style.display = "none";
+        return;
+      }
+
+      const projectText = project ? ` #${project}` : "";
+      const mobileQuery =
+        `content=${encodeURIComponent(title + projectText)}` +
+        `&date=${encodeURIComponent(date)}&priority=4`;
+      const mobileUrl = `todoist://addtask?${mobileQuery}`;
+      const desktopContent = `${title} ${date} p1${projectText}`;
+      const desktopUrl =
+        `todoist://openquickadd?content=${encodeURIComponent(desktopContent)}`;
+
+      const userAgent = navigator.userAgent || "";
+      const isAndroid = /Android/i.test(userAgent);
+      const isIOS = /iPhone|iPad|iPod/i.test(userAgent);
+      let target = desktopUrl;
+
+      if (isAndroid) {
+        target =
+          `intent://addtask?${mobileQuery}` +
+          "#Intent;scheme=todoist;package=com.todoist;" +
+          "S.browser_fallback_url=" +
+          encodeURIComponent("https://play.google.com/store/apps/details?id=com.todoist") +
+          ";end";
+      } else if (isIOS) {
+        target = mobileUrl;
+      }
+
+      button.href = target;
+
+      // Try once automatically. If an in-app browser blocks automatic external
+      // navigation, the visible button provides a user-initiated fallback.
+      window.setTimeout(() => {
+        window.location.href = target;
+      }, 100);
+    })();
+  </script>
+</body>
+</html>

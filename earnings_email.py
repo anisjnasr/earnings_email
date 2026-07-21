@@ -48,6 +48,9 @@ PROJECT_NAME   = "Earnings"        # Todoist project the "add" links target.
 EXCHANGES      = "NASDAQ,NYSE"     # US exchanges to include.
 
 ACCENT    = "#3BBFCF"   # button colour in the email
+TODOIST_REDIRECT_URL = (
+    "https://anisjnasr.github.io/earnings_email/add.html"
+)
 # ----------------------------------------------------------------------------
 
 FINNHUB_API_KEY    = os.environ.get("FINNHUB_API_KEY", "").strip()
@@ -171,21 +174,22 @@ BUCKET_SUFFIX = {"bmo": " - BMO", "amc": " - AMC", "dmh": " - DMH", "tbd": ""}
 
 
 def quick_add_link(symbol, dt, bucket):
-    """Build Todoist's mobile-compatible add-task deep link.
+    """Build an HTTPS link to the cross-platform Todoist redirect page.
 
-    Android/iOS use todoist://addtask (openquickadd is desktop-only). The mobile
-    scheme accepts separate content, date, and priority parameters. Todoist's
-    URL API represents client Priority 1 as priority=4."""
+    Gmail Android strips todoist:// links from email. The GitHub Pages redirect
+    receives only non-secret task fields, then opens Todoist's mobile add-task
+    or desktop Quick Add scheme with the earnings date and Priority 1."""
     date_txt = f"{dt.strftime('%b')} {dt.day} {dt.year}"      # e.g. "Jul 24 2026"
     suffix = BUCKET_SUFFIX.get(bucket, "")
-    proj = f" #{PROJECT_NAME}" if PROJECT_NAME else ""
-    content = f"{symbol} Earnings{suffix}{proj}"
+    title = f"{symbol} Earnings{suffix}"
     return (
-        "todoist://addtask?content="
-        + urllib.parse.quote(content, safe="")
+        TODOIST_REDIRECT_URL
+        + "?title="
+        + urllib.parse.quote(title, safe="")
         + "&date="
         + urllib.parse.quote(date_txt, safe="")
-        + "&priority=4"
+        + "&project="
+        + urllib.parse.quote(PROJECT_NAME, safe="")
     )
 
 
