@@ -156,12 +156,21 @@ def timing_bucket(raw):
     return "tbd", ""                          # unknown -> all-day task
 
 
-def quick_add_link(symbol, dt, clock):
-    """Build a todoist:// link that opens the app's quick-add, pre-filled."""
+# Session suffix appended to the task name (e.g. "GOOGL Earnings - AMC").
+# tbd -> no suffix, since the session is unknown.
+BUCKET_SUFFIX = {"bmo": " - BMO", "amc": " - AMC", "dmh": " - DMH", "tbd": ""}
+
+
+def quick_add_link(symbol, dt, bucket):
+    """Build a todoist:// link that opens the app's quick-add, pre-filled.
+
+    Uses Todoist natural-language syntax: the date sets the due date (no time),
+    'p1' sets Priority 1, and '#Project' routes it. The session (BMO/AMC/DMH) is
+    part of the task *name*, not the due time."""
     date_txt = f"{dt.strftime('%b')} {dt.day} {dt.year}"      # e.g. "Jul 24 2026"
-    when = f"{date_txt} {clock}".strip()
+    suffix = BUCKET_SUFFIX.get(bucket, "")
     proj = f" #{PROJECT_NAME}" if PROJECT_NAME else ""
-    content = f"{symbol} earnings {when}{proj}"
+    content = f"{symbol} Earnings{suffix} {date_txt} p1{proj}"
     return "todoist://openquickadd?content=" + urllib.parse.quote(content, safe="")
 
 
@@ -171,7 +180,7 @@ def money(cap):
 
 
 def row_html(ev):
-    link = quick_add_link(ev["symbol"], ev["dt"], ev["clock"])
+    link = quick_add_link(ev["symbol"], ev["dt"], ev["bucket"])
     return f"""
     <tr>
       <td style="padding:10px 8px;border-bottom:1px solid #eee;">
@@ -302,14 +311,14 @@ def main():
     for sym, dt, hour in events:
         if sym not in universe:
             continue
-        bucket, clock = timing_bucket(hour)
+        bucket, _clock = timing_bucket(hour)
         events_by_day.setdefault(dt, {"bmo": [], "amc": [], "dmh": [], "tbd": []})
         events_by_day[dt][bucket].append({
             "symbol": sym,
             "name": universe[sym]["name"],
             "cap": universe[sym]["cap"],
             "dt": dt,
-            "clock": clock,
+            "bucket": bucket,
         })
         count += 1
 

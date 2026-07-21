@@ -176,12 +176,15 @@ todoist://openquickadd?content=<URL-ENCODED CONTENT>
 
 **Content string (before encoding):**
 ```
-{SYMBOL} earnings {Mon} {D} {YYYY} {CLOCK} #{PROJECT_NAME}
+{SYMBOL} Earnings[ - {SESSION}] {Mon} {D} {YYYY} p1 #{PROJECT_NAME}
 ```
-- Example: `NVDA earnings Jul 24 2026 4:30pm #Earnings`
-- The date + clock are written in **Todoist natural-language date syntax** so
-  Todoist parses the due date/time itself. Include the year to avoid ambiguity.
-- If `CLOCK` is empty (tbd bucket), omit it → task is all-day on that date.
+- Example: `NVDA Earnings - AMC Jul 24 2026 p1 #Earnings`
+- The date is written in **Todoist natural-language date syntax** (no time of
+  day) so Todoist sets an all-day due date. Include the year to avoid ambiguity.
+- `SESSION` is the uppercased bucket (`BMO`/`AMC`/`DMH`) appended to the task
+  **name**; omit the ` - {SESSION}` segment for the `tbd` bucket.
+- `p1` sets **Priority 1** (highest) on every task.
+- Note the capital **E** in `Earnings`.
 - If `PROJECT_NAME` is `""`, omit the `#...` segment → task goes to Inbox.
 - URL-encode the **entire** content with `urllib.parse.quote(content, safe="")`
   so spaces become `%20` and `#` becomes `%23` (critical — an unencoded `#`
