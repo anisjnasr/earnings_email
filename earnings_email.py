@@ -58,7 +58,10 @@ ACCENT    = "#3BBFCF"   # button colour in the email
 FINNHUB_API_KEY    = os.environ.get("FINNHUB_API_KEY", "").strip()
 GMAIL_ADDRESS      = os.environ.get("GMAIL_ADDRESS", "").strip()
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "").strip()
-RECIPIENT          = os.environ.get("RECIPIENT", GMAIL_ADDRESS).strip()
+# Note: the workflow always defines RECIPIENT (as an empty string when the
+# secret is unset), so a plain get(default=...) won't fall back. Coalesce an
+# empty value to GMAIL_ADDRESS explicitly.
+RECIPIENT          = os.environ.get("RECIPIENT", "").strip() or GMAIL_ADDRESS
 
 EASTERN = ZoneInfo("America/New_York")
 FINNHUB = "https://finnhub.io/api/v1"
