@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Email a "this week" earnings digest, split into Before-Open (BMO) and
+Email weekly and daily earnings digests, split into Before-Open (BMO) and
 After-Close (AMC), for every US company above a market-cap cutoff.
 
 Each stock has a tap-to-add link. Tapping it on your phone opens the Todoist
-app with the task pre-filled (ticker + timing + date) so you just press the
-add button. Nothing is added automatically -- YOU pick which ones to keep.
+app with the task name, all-day date, Priority 1, and project pre-filled so you
+just press the add button. Nothing is added automatically -- YOU choose.
 
-Plain-English flow each morning:
-  1. Ask Finnhub who reports earnings Monday-Friday of the current week, and
+Plain-English flow:
+  1. Ask Finnhub who reports in the selected weekly or daily date window, and
      whether it's BMO (before open) or AMC (after close).
   2. For each unique ticker, ask Finnhub for its market cap + company name.
   3. Keep only companies at/above MIN_MARKET_CAP on the target US exchanges,
@@ -33,6 +33,7 @@ import json
 import time
 import smtplib
 import urllib.parse
+import urllib.error
 import urllib.request
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -46,12 +47,6 @@ PROJECT_NAME   = "Earnings"        # Todoist project the "add" links target.
                                    #      or set to "" to drop tasks in your Inbox.
 EXCHANGES      = "NASDAQ,NYSE"     # US exchanges to include.
 
-# Task time-of-day (US Eastern) that the "add" link pre-fills.
-# Todoist shows these in your local Dubai time automatically.
-BMO_CLOCK = "9:00am"    # before market open
-AMC_CLOCK = "4:30pm"    # after market close
-DMH_CLOCK = "12:00pm"   # during market hours (rare)
-
 ACCENT    = "#3BBFCF"   # button colour in the email
 # ----------------------------------------------------------------------------
 
@@ -63,7 +58,7 @@ GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "").strip()
 # empty value to GMAIL_ADDRESS explicitly.
 RECIPIENT          = os.environ.get("RECIPIENT", "").strip() or GMAIL_ADDRESS
 
-EASTERN = ZoneInfo("America/New_York")
+UAE = ZoneInfo("Asia/Dubai")
 FINNHUB = "https://finnhub.io/api/v1"
 
 # Finnhub free tier allows 60 requests/minute; pace per-symbol lookups just
@@ -76,10 +71,20 @@ _EXCHANGE_TOKENS = [x.strip().upper() for x in EXCHANGES.split(",") if x.strip()
 
 
 # -------------------------------- helpers -----------------------------------
-def http_get(url):
-    req = urllib.request.Request(url, headers={"User-Agent": "earnings-bot"})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        data = json.loads(r.read().decode())
+def http_get(url, retries=4):
+    # Retry on HTTP 429 (Finnhub's rate-limit signal) with exponential backoff,
+    # so bursts or a concurrent run don't hard-fail the job.
+    for attempt in range(retries + 1):
+        req = urllib.request.Request(url, headers={"User-Agent": "earnings-bot"})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                data = json.loads(r.read().decode())
+            break
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < retries:
+                time.sleep(2 * (2 ** attempt))    # 2, 4, 8, 16s
+                continue
+            raise
     # Finnhub reports problems as a JSON object with an "error" key; surface it
     # clearly instead of failing later with a confusing TypeError.
     if isinstance(data, dict) and data.get("error"):
@@ -87,15 +92,19 @@ def http_get(url):
     return data
 
 
-def current_week_mon_fri():
-    """Return (monday, friday) dates for the current week; roll to next week
-    on weekends so you always see a full trading week."""
-    today = datetime.now(EASTERN).date()
-    if today.weekday() >= 5:                 # Sat(5)/Sun(6) -> next Monday
+def compute_window(mode):
+    """Return the (start, end) date window for the given email mode.
+
+    weekly -> Mon..Fri of the current week (rolls to next week on weekends, so a
+              Sunday send previews the upcoming trading week).
+    daily  -> today and tomorrow in UAE, matching the 08:00 UAE schedule."""
+    today = datetime.now(UAE).date()
+    if mode == "daily":
+        return today, today + timedelta(days=1)
+    if today.weekday() >= 5:                  # Sat(5)/Sun(6) -> next Monday
         today = today + timedelta(days=7 - today.weekday())
     monday = today - timedelta(days=today.weekday())
-    friday = monday + timedelta(days=4)
-    return monday, friday
+    return monday, monday + timedelta(days=4)
 
 
 def get_earnings(from_date, to_date):
@@ -139,21 +148,21 @@ def get_profile(symbol):
 
 
 def timing_bucket(raw):
-    """Map Finnhub's 'hour' field to a bucket + the clock time for the task."""
+    """Map Finnhub's 'hour' field to an email/task-name bucket."""
     t = (raw or "").strip().lower()
     if t in ("bmo", "before market open"):
-        return "bmo", BMO_CLOCK
+        return "bmo"
     if t in ("amc", "after market close"):
-        return "amc", AMC_CLOCK
+        return "amc"
     if t in ("dmh", "during market hours"):
-        return "dmh", DMH_CLOCK
+        return "dmh"
     if ":" in t:                              # a real clock time like "08:30"
         try:
             hh = int(t.split(":")[0])
-            return ("amc", AMC_CLOCK) if hh >= 16 else ("bmo", BMO_CLOCK)
+            return "amc" if hh >= 16 else "bmo"
         except ValueError:
             pass
-    return "tbd", ""                          # unknown -> all-day task
+    return "tbd"
 
 
 # Session suffix appended to the task name (e.g. "GOOGL Earnings - AMC").
@@ -191,11 +200,20 @@ def row_html(ev):
                  white-space:nowrap;font-size:14px;color:#444;">{money(ev['cap'])}</td>
       <td style="padding:10px 8px;border-bottom:1px solid #eee;text-align:right;
                  width:52px;">
-        <a href="{link}" title="Add to Todoist" aria-label="Add {ev['symbol']} to Todoist"
-           style="display:inline-block;background:{ACCENT};color:#fff;
-                  text-decoration:none;font-size:24px;font-weight:700;
-                  width:40px;height:40px;line-height:40px;text-align:center;
-                  border-radius:10px;">&#43;</a>
+        <table role="presentation" align="right" width="40" height="40"
+               cellpadding="0" cellspacing="0" style="border-collapse:separate;">
+          <tr>
+            <td width="40" height="40" align="center" valign="middle"
+                bgcolor="{ACCENT}" style="width:40px;height:40px;background:{ACCENT};
+                border-radius:10px;text-align:center;vertical-align:middle;">
+              <a href="{link}" title="Add to Todoist"
+                 aria-label="Add {ev['symbol']} to Todoist"
+                 style="display:block;width:40px;color:#fff;text-decoration:none;
+                        font-family:Arial,sans-serif;font-size:23px;font-weight:700;
+                        line-height:24px;text-align:center;">&#43;</a>
+            </td>
+          </tr>
+        </table>
       </td>
     </tr>"""
 
@@ -216,7 +234,7 @@ def section_html(label, events):
              style="border-collapse:collapse;">{rows}</table>"""
 
 
-def build_email(events_by_day, monday, friday, count):
+def build_email(events_by_day, start, end, count, heading):
     days_html = ""
     for day in sorted(events_by_day):
         buckets = events_by_day[day]
@@ -238,19 +256,16 @@ def build_email(events_by_day, monday, friday, count):
             {section_html("Time not confirmed", buckets["tbd"])}
           </details>"""
 
-    week_txt = f"{monday.strftime('%b')} {monday.day} \u2013 {friday.strftime('%b')} {friday.day}"
+    range_txt = f"{start.strftime('%b')} {start.day} \u2013 {end.strftime('%b')} {end.day}"
     return f"""\
 <!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"></head>
 <body style="margin:0;background:#f5f6f7;">
   <div style="max-width:640px;margin:0 auto;padding:20px 16px;
               font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
-    <div style="font-size:22px;font-weight:800;color:#171717;">Earnings this week</div>
-    <div style="font-size:14px;color:#666;margin-top:2px;">
-      {week_txt} &middot; {count} companies &ge; {money(MIN_MARKET_CAP)} &middot;
-      tap <b>+</b> to send one to Todoist</div>
+    <div style="font-size:22px;font-weight:800;color:#171717;">{heading} - {range_txt}</div>
     {days_html if days_html else
-     '<div style="margin-top:24px;color:#666;">No qualifying earnings found this week.</div>'}
+     '<div style="margin-top:24px;color:#666;">No qualifying earnings found.</div>'}
     <div style="margin-top:30px;font-size:12px;color:#aaa;">
       Data: Finnhub. Times shown are the US session (BMO/AMC).</div>
   </div>
@@ -270,15 +285,28 @@ def send_email(html, subject):
         s.sendmail(GMAIL_ADDRESS, [RECIPIENT], msg.as_string())
 
 
+# Email modes -> (title heading, subject prefix)
+MODES = {
+    "weekly": "Earnings this week",
+    "daily":  "Upcoming Earnings",
+}
+
+
 # ---------------------------------- main ------------------------------------
 def main():
     if not (FINNHUB_API_KEY and GMAIL_ADDRESS and GMAIL_APP_PASSWORD):
         sys.exit("Missing one of: FINNHUB_API_KEY, GMAIL_ADDRESS, GMAIL_APP_PASSWORD.")
 
-    monday, friday = current_week_mon_fri()
+    mode = sys.argv[1].strip().lower() if len(sys.argv) > 1 else "weekly"
+    if mode not in MODES:
+        sys.exit(f"Unknown mode '{mode}'. Use one of: {', '.join(MODES)}.")
+    heading = MODES[mode]
 
-    earnings = get_earnings(monday.isoformat(), friday.isoformat())
-    print(f"Raw earnings events this week: {len(earnings)}")
+    start, end = compute_window(mode)
+    print(f"Mode: {mode} | window {start} -> {end}")
+
+    earnings = get_earnings(start.isoformat(), end.isoformat())
+    print(f"Raw earnings events in window: {len(earnings)}")
 
     # Keep in-window events and collect the unique tickers we need caps for.
     events, symbols = [], []
@@ -287,7 +315,7 @@ def main():
         if not sym or not day:
             continue
         dt = datetime.strptime(day, "%Y-%m-%d").date()
-        if not (monday <= dt <= friday):
+        if not (start <= dt <= end):
             continue
         events.append((sym, dt, e.get("hour")))
         if sym not in symbols:
@@ -311,7 +339,7 @@ def main():
     for sym, dt, hour in events:
         if sym not in universe:
             continue
-        bucket, _clock = timing_bucket(hour)
+        bucket = timing_bucket(hour)
         events_by_day.setdefault(dt, {"bmo": [], "amc": [], "dmh": [], "tbd": []})
         events_by_day[dt][bucket].append({
             "symbol": sym,
@@ -323,8 +351,8 @@ def main():
         count += 1
 
     print(f"Qualifying companies ({money(MIN_MARKET_CAP)}+): {count}")
-    html = build_email(events_by_day, monday, friday, count)
-    subject = f"Earnings this week ({count}) \u2014 {monday.strftime('%b')} {monday.day}"
+    html = build_email(events_by_day, start, end, count, heading)
+    subject = f"{heading} ({count}) \u2014 {start.strftime('%b')} {start.day}"
     send_email(html, subject)
     print("Email sent.")
 

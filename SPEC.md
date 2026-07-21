@@ -1,4 +1,4 @@
-# SPEC — Weekly Earnings Email with Todoist Quick-Add Links
+# SPEC — Weekly and Daily Earnings Emails with Todoist Quick-Add Links
 
 ## How to use this document in Cursor
 Put this file in the repo root as `SPEC.md`, open the repo in Cursor, and prompt:
@@ -12,12 +12,15 @@ instruction in this doc over any default Cursor would choose.
 ---
 
 ## 1. Purpose (plain English)
-Once every weekday morning, automatically email me a digest of every US company
-reporting earnings **this week** whose market cap is **at least $1B**. Group the
-list by day, and within each day split it into **Before-Open (BMO)** and
-**After-Close (AMC)**. Each company has a tap-to-add button; tapping it on my
-phone opens the **Todoist app** with the task pre-filled (ticker + date + time)
-so I choose which handful to actually add. Nothing is added automatically.
+Send two automated digests for US companies with market cap **at least $1B**:
+- A **weekly** email on Sunday morning covering the upcoming Monday–Friday.
+- A **daily** email Monday–Friday covering the current day and the next day.
+
+Group each list by day, and within each day split it into **Before-Open (BMO)**
+and **After-Close (AMC)**. Each company has a tap-to-add button; tapping it on
+my phone opens the **Todoist app** with the task name, all-day date, Priority 1,
+and project pre-filled so I choose which handful to add. Nothing is added
+automatically.
 
 ---
 
@@ -50,7 +53,7 @@ so I choose which handful to actually add. Nothing is added automatically.
 ├── earnings_email.py            # the whole program
 ├── .github/
 │   └── workflows/
-│       └── earnings.yml         # the daily scheduler
+│       └── earnings.yml         # weekly + daily scheduler
 └── SPEC.md                      # this document
 ```
 
@@ -79,16 +82,13 @@ Expose these as clearly-labelled constants so they're easy to tweak:
 MIN_MARKET_CAP = 1_000_000_000   # $1B cutoff
 PROJECT_NAME   = "Earnings"      # Todoist project for added tasks; "" = Inbox
 EXCHANGES      = "NASDAQ,NYSE"   # US exchanges included
-BMO_CLOCK      = "9:00am"        # task time for before-open reporters
-AMC_CLOCK      = "4:30pm"        # task time for after-close reporters
-DMH_CLOCK      = "12:00pm"       # task time for during-hours reporters
 ACCENT         = "#3BBFCF"       # button colour in the email
 RATE_LIMIT_SLEEP = 1.1           # seconds between Finnhub per-symbol lookups
 ```
 `EXCHANGES` is used to filter Finnhub's profile `exchange` field (it returns full
 names like `"NASDAQ NMS - GLOBAL MARKET"` and `"NEW YORK STOCK EXCHANGE, INC."`).
-All market-time reasoning uses the `America/New_York` timezone via `zoneinfo`
-(handles US daylight saving automatically).
+The date window uses `Asia/Dubai` via `zoneinfo`, matching the 08:00 UAE
+schedule year-round. Finnhub's `hour` value supplies the US session bucket.
 
 ---
 
@@ -130,12 +130,13 @@ Build a dict of qualifiers: `universe[symbol] = {"cap": dollars, "name": name,
 
 ## 7. Core logic (deterministic, step by step)
 
-1. **Compute the week window.** Get "today" in `America/New_York`. If it's
-   Saturday or Sunday, roll forward to next Monday. `monday = today - weekday`,
-   `friday = monday + 4 days`. This is the Mon–Fri window shown in the email.
-2. **Fetch earnings** for `monday`→`friday` (6a). Log the raw count.
+1. **Select the mode + window.** The CLI accepts `weekly` or `daily`:
+   - `weekly`: compute the upcoming/current Monday–Friday. On Sunday, roll
+     forward to Monday so the Sunday email previews the coming trading week.
+   - `daily`: use today and tomorrow in `Asia/Dubai`, matching the UAE schedule.
+2. **Fetch earnings** for the selected inclusive window (6a). Log the raw count.
 3. **Collect in-window events + unique tickers.** For each earnings row: skip if
-   no `symbol`/`date`; parse `date` and skip if outside `[monday, friday]`;
+   no `symbol`/`date`; parse `date` and skip if outside `[start, end]`;
    remember `(symbol, date, hour)` and the set of unique symbols.
 4. **Build the market-cap universe** (6b). For each unique ticker (paced by
    `RATE_LIMIT_SLEEP`), fetch its profile; keep it if `cap ≥ MIN_MARKET_CAP` and
@@ -143,23 +144,23 @@ Build a dict of qualifiers: `universe[symbol] = {"cap": dollars, "name": name,
    many qualified.
 5. **Filter + bucket.** For each in-window event:
    - Skip if `symbol` not in `universe` (below the cap or wrong exchange).
-   - Map `hour` → bucket + clock via the table below.
-   - Append to `events_by_day[date][bucket]` with `{symbol, name, cap, dt, clock}`.
+   - Map `hour` → bucket via the table below.
+   - Append to `events_by_day[date][bucket]` with `{symbol, name, cap, dt, bucket}`.
    - Increment a running `count`.
 6. **Sort** each bucket's list by `cap` descending (biggest company first).
 7. **Build the HTML email** (section 8).
 8. **Send** via Gmail SMTP (section 9).
 9. **Log** the final qualifying count and "Email sent."
 
-### Timing map (`hour` field → bucket, clock)
-| Raw `hour` value                         | Bucket | Clock used   |
-|------------------------------------------|--------|--------------|
-| `bmo`, `before market open`              | bmo    | `BMO_CLOCK`  |
-| `amc`, `after market close`              | amc    | `AMC_CLOCK`  |
-| `dmh`, `during market hours`             | dmh    | `DMH_CLOCK`  |
-| clock string, hour ≥ 16                  | amc    | `AMC_CLOCK`  |
-| clock string, hour < 16                  | bmo    | `BMO_CLOCK`  |
-| empty / anything else                    | tbd    | `""` (none)  |
+### Timing map (`hour` field → bucket)
+| Raw `hour` value                         | Bucket |
+|------------------------------------------|--------|
+| `bmo`, `before market open`              | bmo    |
+| `amc`, `after market close`              | amc    |
+| `dmh`, `during market hours`             | dmh    |
+| clock string, hour ≥ 16                  | amc    |
+| clock string, hour < 16                  | bmo    |
+| empty / anything else                    | tbd    |
 
 ---
 
@@ -197,7 +198,8 @@ No Todoist token, no API call, no network request from the script for this step.
 ## 9. Email delivery — Gmail SMTP
 - Build a `MIMEMultipart("alternative")` with a short plain-text part and the
   HTML part.
-- Subject: `Earnings this week ({count}) — {Mon} {D}`.
+- Weekly subject: `Earnings this week ({count}) — {Mon} {D}`.
+- Daily subject: `Upcoming Earnings ({count}) — {Mon} {D}`.
 - Send with `smtplib.SMTP_SSL("smtp.gmail.com", 465)` using an
   `ssl.create_default_context()`, then `login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)`
   and `sendmail(GMAIL_ADDRESS, [RECIPIENT], msg.as_string())`.
@@ -207,8 +209,11 @@ No Todoist token, no API call, no network request from the script for this step.
 ## 10. Email layout spec (HTML, mobile-first)
 - Single-column, `max-width:640px`, centered, system font stack, light-grey page
   background (`#f5f6f7`), white content area.
-- **Header:** bold title "Earnings this week"; subline with the week range, the
-  qualifying count, the cutoff, and a hint to tap **+ Add**.
+- **Weekly header:** one bold line:
+  `Earnings this week - {start Mon} {D} – {end Mon} {D}`.
+- **Daily header:** one bold line:
+  `Upcoming Earnings - {start Mon} {D} – {end Mon} {D}`.
+- Do not include the qualifying count, cutoff, or Todoist hint below the header.
 - **Per day** (only days that have events), in date order:
   - Each day is a collapsible `<details open>` block; the day heading is the
     `<summary>` (e.g. "Thursday, Jul 24  (12)" with the qualifying count) with an
@@ -222,24 +227,30 @@ No Todoist token, no API call, no network request from the script for this step.
 - **Each row** = a 3-column table row:
   1. Ticker (bold) with company name beneath it in small grey text.
   2. Market cap, right-aligned (`$X.XB`, or `$X.XXT` at/above a trillion).
-  3. A compact **`+` icon** button (no text): ~40×40 accent square, white plus,
-     rounded (tap target ≥ ~40px), `href` = the quick-add URL from §8.
+  3. A compact **`+` icon** button (no text): 40×40 accent square, white plus,
+     rounded and centered using an email-safe presentation table
+     (`align="center"`, `valign="middle"`), `href` = the quick-add URL from §8.
 - Use **inline CSS only** (email clients strip `<style>` blocks unreliably).
 - Footer: tiny grey line crediting Finnhub and noting times are the US session.
-- If there are zero qualifying companies, show a friendly "No qualifying
-  earnings found this week." message instead of empty tables.
+- If there are zero qualifying companies, show a friendly
+  "No qualifying earnings found." message instead of empty tables.
 
 ---
 
 ## 11. GitHub Actions workflow (`.github/workflows/earnings.yml`)
-- Triggers: `schedule` cron `0 4 * * 1-5` (04:00 UTC weekdays = 08:00 UAE time,
-  UTC+4, no DST) **and** `workflow_dispatch` (manual "Run workflow" button).
+- Scheduled triggers (UAE is UTC+4 with no DST):
+  - `0 4 * * 0`: weekly email, Sunday at 08:00 UAE.
+  - `0 4 * * 1-5`: daily email, Monday–Friday at 08:00 UAE.
+- `workflow_dispatch` offers `both`, `weekly`, and `daily`; `both` sends the two
+  emails sequentially to stay within Finnhub's account-level rate limit.
 - Job on `ubuntu-latest`:
   1. `actions/checkout@v4`
   2. `actions/setup-python@v5` with `python-version: "3.12"`
   3. `pip install tzdata` (ensures `zoneinfo` has the timezone database)
-  4. Run `python earnings_email.py` with `FINNHUB_API_KEY`, `GMAIL_ADDRESS`,
-     `GMAIL_APP_PASSWORD`, and `RECIPIENT` passed from `secrets` as `env`.
+  4. Resolve the scheduled/manual digest mode and run
+     `python earnings_email.py weekly`, `python earnings_email.py daily`, or both,
+     with `FINNHUB_API_KEY`, `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, and
+     `RECIPIENT` passed from `secrets` as `env`.
 
 > Runtime note: because each reporting ticker needs its own profile lookup, a
 > busy week (~500 tickers) takes several minutes per run at 60 req/min. This is
@@ -262,15 +273,15 @@ No Todoist token, no API call, no network request from the script for this step.
 ---
 
 ## 13. Acceptance criteria (how to verify)
-1. Manually triggering the workflow ("Run workflow") completes green and the log
-   prints the raw earnings count, the ticker-lookup count, the universe count,
-   the qualifying count, and "Email sent."
-2. An email arrives at `RECIPIENT` within ~1 minute.
-3. The email shows the current Mon–Fri range and only companies ≥ $1B.
+1. Manually triggering `both` completes green and logs two modes/windows, two
+   sets of counts, and two "Email sent." lines.
+2. Two emails arrive at `RECIPIENT`: one weekly and one daily.
+3. The weekly email shows the upcoming/current Mon–Fri range; the daily email
+   shows today and tomorrow. Both contain only companies ≥ $1B.
 4. Each day is split into BMO/AMC; rows are sorted biggest-cap first.
-5. On a phone with the Todoist app installed, tapping **+ Add** opens Todoist's
-   Quick Add pre-filled with the ticker, the correct date, and the correct time,
-   and the task lands in the `Earnings` project when confirmed.
+5. On a phone with the Todoist app installed, tapping **+** opens Todoist Quick
+   Add with `{SYMBOL} Earnings - {SESSION}`, the correct all-day date, Priority 1,
+   and the `Earnings` project pre-filled.
 6. Changing `MIN_MARKET_CAP` and re-running visibly changes the list length.
 
 ---

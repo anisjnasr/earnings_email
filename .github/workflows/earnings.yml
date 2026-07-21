@@ -2,8 +2,19 @@ name: Earnings email
 
 on:
   schedule:
-    - cron: "0 4 * * 1-5"   # 04:00 UTC on weekdays = 8:00am UAE time (UTC+4)
-  workflow_dispatch:         # adds a "Run workflow" button for manual testing
+    - cron: "0 4 * * 0"     # weekly: Sunday at 8:00am UAE (04:00 UTC)
+    - cron: "0 4 * * 1-5"   # daily: Monday-Friday at 8:00am UAE (04:00 UTC)
+  workflow_dispatch:
+    inputs:
+      digest:
+        description: "Digest to send"
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - weekly
+          - daily
 
 jobs:
   run:
@@ -25,4 +36,11 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           # Optional: set RECIPIENT as a secret to send somewhere other than yourself.
           RECIPIENT: ${{ secrets.RECIPIENT }}
-        run: python earnings_email.py
+          DIGEST_MODE: ${{ github.event_name == 'schedule' && (github.event.schedule == '0 4 * * 0' && 'weekly' || 'daily') || inputs.digest }}
+        run: |
+          if [ "$DIGEST_MODE" = "weekly" ] || [ "$DIGEST_MODE" = "both" ]; then
+            python earnings_email.py weekly
+          fi
+          if [ "$DIGEST_MODE" = "daily" ] || [ "$DIGEST_MODE" = "both" ]; then
+            python earnings_email.py daily
+          fi
