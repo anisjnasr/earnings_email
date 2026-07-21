@@ -197,11 +197,11 @@ https://anisjnasr.github.io/earnings_email/add.html
 
 **Redirect behavior (`docs/add.html`):**
 - Android: open an Android `intent://` targeting package `com.todoist`, which
-  resolves to `todoist://addtask?content=...&date=...&priority=4`.
-- iOS: open `todoist://addtask?content=...&date=...&priority=4`.
+  resolves to `todoist://addtask?content=...&date=...&priority=1`.
+- iOS: open `todoist://addtask?content=...&date=...&priority=1`.
 - Desktop: open
   `todoist://openquickadd?content={TITLE} {DATE} p1 #{PROJECT_NAME}`.
-- Mobile `priority=4` and desktop `p1` both mean client-facing **Priority 1**.
+- Mobile `priority=1` and desktop `p1` both produce client-facing **Priority 1**.
 - If automatic external navigation is blocked by an in-app browser, show a
   visible "Open in Todoist" button as a user-initiated fallback.
 
@@ -212,8 +212,10 @@ No Todoist token, no API call, no network request from the script for this step.
 ## 9. Email delivery — Gmail SMTP
 - Build a `MIMEMultipart("alternative")` with a short plain-text part and the
   HTML part.
-- Weekly subject: `Earnings this week ({count}) — {Mon} {D}`.
-- Daily subject: `Upcoming Earnings ({count}) — {Mon} {D}`.
+- Weekly subject:
+  `Earnings this week ({count}) — {start Mon} {D} - {end Mon} {D}`.
+- Daily subject:
+  `Upcoming Earnings ({count}) — {start Mon} {D} - {end Mon} {D}`.
 - Send with `smtplib.SMTP_SSL("smtp.gmail.com", 465)` using an
   `ssl.create_default_context()`, then `login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)`
   and `sendmail(GMAIL_ADDRESS, [RECIPIENT], msg.as_string())`.

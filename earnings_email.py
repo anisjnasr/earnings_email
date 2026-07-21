@@ -365,7 +365,10 @@ def main():
 
     print(f"Qualifying companies ({money(MIN_MARKET_CAP)}+): {count}")
     html = build_email(events_by_day, start, end, count, heading)
-    subject = f"{heading} ({count}) \u2014 {start.strftime('%b')} {start.day}"
+    subject = (
+        f"{heading} ({count}) \u2014 "
+        f"{start.strftime('%b')} {start.day} - {end.strftime('%b')} {end.day}"
+    )
     send_email(html, subject)
     print("Email sent.")
 

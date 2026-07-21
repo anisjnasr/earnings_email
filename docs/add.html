@@ -36,7 +36,7 @@
       const projectText = project ? ` #${project}` : "";
       const mobileQuery =
         `content=${encodeURIComponent(title + projectText)}` +
-        `&date=${encodeURIComponent(date)}&priority=4`;
+        `&date=${encodeURIComponent(date)}&priority=1`;
       const mobileUrl = `todoist://addtask?${mobileQuery}`;
       const desktopContent = `${title} ${date} p1${projectText}`;
       const desktopUrl =
