@@ -180,11 +180,13 @@ def row_html(ev):
       </td>
       <td style="padding:10px 8px;border-bottom:1px solid #eee;text-align:right;
                  white-space:nowrap;font-size:14px;color:#444;">{money(ev['cap'])}</td>
-      <td style="padding:10px 8px;border-bottom:1px solid #eee;text-align:right;">
-        <a href="{link}"
+      <td style="padding:10px 8px;border-bottom:1px solid #eee;text-align:right;
+                 width:52px;">
+        <a href="{link}" title="Add to Todoist" aria-label="Add {ev['symbol']} to Todoist"
            style="display:inline-block;background:{ACCENT};color:#fff;
-                  text-decoration:none;font-size:14px;font-weight:600;
-                  padding:10px 14px;border-radius:8px;">+ Add</a>
+                  text-decoration:none;font-size:24px;font-weight:700;
+                  width:40px;height:40px;line-height:40px;text-align:center;
+                  border-radius:10px;">&#43;</a>
       </td>
     </tr>"""
 
@@ -195,8 +197,12 @@ def section_html(label, events):
     events.sort(key=lambda e: e["cap"], reverse=True)
     rows = "".join(row_html(e) for e in events)
     return f"""
-      <div style="font-size:12px;font-weight:700;letter-spacing:.5px;
-                  text-transform:uppercase;color:#999;margin:14px 0 4px;">{label}</div>
+      <div style="margin:18px 0 8px;">
+        <span style="display:inline-block;background:{ACCENT};color:#fff;
+                     font-size:12px;font-weight:800;letter-spacing:.8px;
+                     text-transform:uppercase;padding:6px 12px;border-radius:6px;
+                     box-shadow:0 1px 2px rgba(0,0,0,.12);">{label}</span>
+      </div>
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
              style="border-collapse:collapse;">{rows}</table>"""
 
@@ -205,26 +211,35 @@ def build_email(events_by_day, monday, friday, count):
     days_html = ""
     for day in sorted(events_by_day):
         buckets = events_by_day[day]
+        n = sum(len(buckets[b]) for b in ("bmo", "amc", "dmh", "tbd"))
         header = day.strftime("%A, %b ") + str(day.day)
+        # <details>/<summary> gives native tap-to-collapse per day in clients that
+        # support it (Apple Mail, Outlook for Mac, etc.); Gmail ignores it and
+        # simply shows each day expanded. Default 'open' keeps it readable either way.
         days_html += f"""
-          <div style="margin-top:26px;">
-            <div style="font-size:17px;font-weight:700;color:#171717;
-                        border-bottom:2px solid {ACCENT};padding-bottom:6px;">{header}</div>
+          <details open style="margin-top:26px;">
+            <summary style="font-size:17px;font-weight:700;color:#171717;
+                            border-bottom:2px solid {ACCENT};padding-bottom:6px;
+                            cursor:pointer;">{header}
+              <span style="font-size:13px;font-weight:600;color:#999;">&nbsp;({n})</span>
+            </summary>
             {section_html("Before open (BMO)", buckets["bmo"])}
             {section_html("After close (AMC)", buckets["amc"])}
             {section_html("During hours", buckets["dmh"])}
             {section_html("Time not confirmed", buckets["tbd"])}
-          </div>"""
+          </details>"""
 
     week_txt = f"{monday.strftime('%b')} {monday.day} \u2013 {friday.strftime('%b')} {friday.day}"
     return f"""\
-<!DOCTYPE html><html><body style="margin:0;background:#f5f6f7;">
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;background:#f5f6f7;">
   <div style="max-width:640px;margin:0 auto;padding:20px 16px;
               font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
     <div style="font-size:22px;font-weight:800;color:#171717;">Earnings this week</div>
     <div style="font-size:14px;color:#666;margin-top:2px;">
       {week_txt} &middot; {count} companies &ge; {money(MIN_MARKET_CAP)} &middot;
-      tap <b>+ Add</b> to send one to Todoist</div>
+      tap <b>+</b> to send one to Todoist</div>
     {days_html if days_html else
      '<div style="margin-top:24px;color:#666;">No qualifying earnings found this week.</div>'}
     <div style="margin-top:30px;font-size:12px;color:#aaa;">

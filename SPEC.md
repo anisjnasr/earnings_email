@@ -207,15 +207,20 @@ No Todoist token, no API call, no network request from the script for this step.
 - **Header:** bold title "Earnings this week"; subline with the week range, the
   qualifying count, the cutoff, and a hint to tap **+ Add**.
 - **Per day** (only days that have events), in date order:
-  - Day heading (e.g. "Thursday, Jul 24") with an accent-colour bottom border.
+  - Each day is a collapsible `<details open>` block; the day heading is the
+    `<summary>` (e.g. "Thursday, Jul 24  (12)" with the qualifying count) with an
+    accent-colour bottom border. Native tap-to-collapse works in clients that
+    support `<details>` (Apple Mail, Outlook for Mac, …); Gmail ignores it and
+    shows the day expanded. Default `open` keeps every client readable.
   - Then, in this order, only for non-empty buckets:
     `Before open (BMO)`, `After close (AMC)`, `During hours`, `Time not confirmed`.
-  - Each bucket is a small uppercase label followed by rows.
+  - Each bucket label is an emphasized **accent-filled pill** (white uppercase
+    bold text on the accent colour) so BMO/AMC stand out, followed by rows.
 - **Each row** = a 3-column table row:
   1. Ticker (bold) with company name beneath it in small grey text.
   2. Market cap, right-aligned (`$X.XB`, or `$X.XXT` at/above a trillion).
-  3. An **+ Add** button: accent background, white text, rounded, generous
-     padding (tap target ≥ ~40px tall), `href` = the quick-add URL from §8.
+  3. A compact **`+` icon** button (no text): ~40×40 accent square, white plus,
+     rounded (tap target ≥ ~40px), `href` = the quick-add URL from §8.
 - Use **inline CSS only** (email clients strip `<style>` blocks unreliably).
 - Footer: tiny grey line crediting Finnhub and noting times are the US session.
 - If there are zero qualifying companies, show a friendly "No qualifying
