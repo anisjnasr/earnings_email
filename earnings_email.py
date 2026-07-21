@@ -61,7 +61,12 @@ FMP     = "https://financialmodelingprep.com"
 def http_get(url):
     req = urllib.request.Request(url, headers={"User-Agent": "earnings-bot"})
     with urllib.request.urlopen(req, timeout=60) as r:
-        return json.loads(r.read().decode())
+        data = json.loads(r.read().decode())
+    # FMP signals gating/quota problems as a JSON object, not the usual array.
+    # Surface it clearly instead of failing later with a confusing TypeError.
+    if isinstance(data, dict) and "Error Message" in data:
+        raise RuntimeError(f"FMP API error: {data['Error Message']}")
+    return data
 
 
 def current_week_mon_fri():
@@ -77,7 +82,7 @@ def current_week_mon_fri():
 
 def get_universe():
     """One FMP call: {symbol: {'cap': float, 'name': str}} above the cutoff."""
-    url = (f"{FMP}/api/v3/stock-screener?"
+    url = (f"{FMP}/stable/company-screener?"
            f"marketCapMoreThan={MIN_MARKET_CAP}"
            f"&exchange={EXCHANGES}"
            f"&isActivelyTrading=true&limit=3000&apikey={FMP_API_KEY}")
@@ -90,9 +95,13 @@ def get_universe():
 
 
 def get_earnings(from_date, to_date):
-    """One FMP call: earnings events (symbol, date, time) in the window."""
-    url = (f"{FMP}/api/v3/earning_calendar?"
-           f"from={from_date}&to={to_date}&apikey={FMP_API_KEY}")
+    """One FMP call: earnings events (symbol, date, time) in the window.
+
+    includeReportTimes=true keeps the bmo/amc/tas 'time' field that the
+    bucketing logic relies on (the stable endpoint omits it by default)."""
+    url = (f"{FMP}/stable/earnings-calendar?"
+           f"from={from_date}&to={to_date}"
+           f"&includeReportTimes=true&apikey={FMP_API_KEY}")
     return http_get(url)
 
 
