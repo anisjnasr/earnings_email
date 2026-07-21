@@ -8,22 +8,29 @@ app with the task pre-filled (ticker + timing + date) so you just press the
 add button. Nothing is added automatically -- YOU pick which ones to keep.
 
 Plain-English flow each morning:
-  1. Ask Financial Modeling Prep (FMP) for every US company above MIN_MARKET_CAP
-     -> this gives us the ticker, company name, and market cap.
-  2. Ask FMP who reports earnings Monday-Friday of the current week, and whether
-     it's BMO (before open) or AMC (after close).
-  3. Keep only companies in both lists, group them by day and by BMO/AMC.
+  1. Ask Finnhub who reports earnings Monday-Friday of the current week, and
+     whether it's BMO (before open) or AMC (after close).
+  2. For each unique ticker, ask Finnhub for its market cap + company name.
+  3. Keep only companies at/above MIN_MARKET_CAP on the target US exchanges,
+     group them by day and by BMO/AMC.
   4. Build an HTML email with a Todoist "add" link on each row and send it to
      yourself via Gmail.
 
+Data source note: Finnhub's free tier exposes the earnings calendar and basic
+company profiles (market cap). There is no bulk market-cap screener on the free
+tier, so we look up each reporting ticker individually and pace the calls to
+respect the 60-requests/minute limit. The data-fetch functions are isolated so
+the provider can be swapped without touching the email/link logic.
+
 Secrets (stored safely in GitHub, never in this file):
-  FMP_API_KEY, GMAIL_ADDRESS, GMAIL_APP_PASSWORD
+  FINNHUB_API_KEY, GMAIL_ADDRESS, GMAIL_APP_PASSWORD
 """
 
 import os
 import sys
 import ssl
 import json
+import time
 import smtplib
 import urllib.parse
 import urllib.request
@@ -48,13 +55,21 @@ DMH_CLOCK = "12:00pm"   # during market hours (rare)
 ACCENT    = "#3BBFCF"   # button colour in the email
 # ----------------------------------------------------------------------------
 
-FMP_API_KEY        = os.environ.get("FMP_API_KEY", "").strip()
+FINNHUB_API_KEY    = os.environ.get("FINNHUB_API_KEY", "").strip()
 GMAIL_ADDRESS      = os.environ.get("GMAIL_ADDRESS", "").strip()
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "").strip()
 RECIPIENT          = os.environ.get("RECIPIENT", GMAIL_ADDRESS).strip()
 
 EASTERN = ZoneInfo("America/New_York")
-FMP     = "https://financialmodelingprep.com"
+FINNHUB = "https://finnhub.io/api/v1"
+
+# Finnhub free tier allows 60 requests/minute; pace per-symbol lookups just
+# under that so a busy week never trips a 429.
+RATE_LIMIT_SLEEP = 1.1                # seconds between profile lookups
+
+# US exchange name fragments accepted from Finnhub's profile 'exchange' field
+# (it returns full names like "NASDAQ NMS - GLOBAL MARKET").
+_EXCHANGE_TOKENS = [x.strip().upper() for x in EXCHANGES.split(",") if x.strip()]
 
 
 # -------------------------------- helpers -----------------------------------
@@ -62,10 +77,10 @@ def http_get(url):
     req = urllib.request.Request(url, headers={"User-Agent": "earnings-bot"})
     with urllib.request.urlopen(req, timeout=60) as r:
         data = json.loads(r.read().decode())
-    # FMP signals gating/quota problems as a JSON object, not the usual array.
-    # Surface it clearly instead of failing later with a confusing TypeError.
-    if isinstance(data, dict) and "Error Message" in data:
-        raise RuntimeError(f"FMP API error: {data['Error Message']}")
+    # Finnhub reports problems as a JSON object with an "error" key; surface it
+    # clearly instead of failing later with a confusing TypeError.
+    if isinstance(data, dict) and data.get("error"):
+        raise RuntimeError(f"Finnhub API error: {data['error']}")
     return data
 
 
@@ -80,33 +95,48 @@ def current_week_mon_fri():
     return monday, friday
 
 
-def get_universe():
-    """One FMP call: {symbol: {'cap': float, 'name': str}} above the cutoff."""
-    url = (f"{FMP}/stable/company-screener?"
-           f"marketCapMoreThan={MIN_MARKET_CAP}"
-           f"&exchange={EXCHANGES}"
-           f"&isActivelyTrading=true&limit=3000&apikey={FMP_API_KEY}")
-    uni = {}
-    for row in http_get(url):
-        sym, cap = row.get("symbol"), row.get("marketCap")
-        if sym and cap:
-            uni[sym] = {"cap": cap, "name": row.get("companyName") or sym}
-    return uni
-
-
 def get_earnings(from_date, to_date):
-    """One FMP call: earnings events (symbol, date, time) in the window.
+    """One Finnhub call: earnings events (symbol, date, hour) in the window.
 
-    includeReportTimes=true keeps the bmo/amc/tas 'time' field that the
-    bucketing logic relies on (the stable endpoint omits it by default)."""
-    url = (f"{FMP}/stable/earnings-calendar?"
-           f"from={from_date}&to={to_date}"
-           f"&includeReportTimes=true&apikey={FMP_API_KEY}")
-    return http_get(url)
+    Returns the raw list of {'symbol', 'date', 'hour', ...} dicts. Finnhub's
+    'hour' field carries the bmo/amc/dmh timing that the bucketing relies on."""
+    url = (f"{FINNHUB}/calendar/earnings?"
+           f"from={from_date}&to={to_date}&token={FINNHUB_API_KEY}")
+    data = http_get(url)
+    return data.get("earningsCalendar", []) if isinstance(data, dict) else []
+
+
+def is_target_exchange(exchange):
+    """True if Finnhub's profile exchange name matches one of EXCHANGES."""
+    e = (exchange or "").upper()
+    if not _EXCHANGE_TOKENS:
+        return True
+    # Finnhub spells NYSE out as "NEW YORK STOCK EXCHANGE".
+    if "NYSE" in _EXCHANGE_TOKENS and "NEW YORK STOCK EXCHANGE" in e:
+        return True
+    return any(tok in e for tok in _EXCHANGE_TOKENS)
+
+
+def get_profile(symbol):
+    """One Finnhub call: {'cap': float_usd, 'name': str, 'exchange': str} for a
+    ticker, or None if the profile is empty. Finnhub returns marketCapitalization
+    in millions of USD, so scale it up to raw dollars."""
+    url = f"{FINNHUB}/stock/profile2?symbol={urllib.parse.quote(symbol)}&token={FINNHUB_API_KEY}"
+    data = http_get(url)
+    if not isinstance(data, dict) or not data:
+        return None
+    cap_millions = data.get("marketCapitalization")
+    if not cap_millions:
+        return None
+    return {
+        "cap": float(cap_millions) * 1_000_000,
+        "name": data.get("name") or symbol,
+        "exchange": data.get("exchange") or "",
+    }
 
 
 def timing_bucket(raw):
-    """Map FMP's 'time' field to a bucket + the clock time for the task."""
+    """Map Finnhub's 'hour' field to a bucket + the clock time for the task."""
     t = (raw or "").strip().lower()
     if t in ("bmo", "before market open"):
         return "bmo", BMO_CLOCK
@@ -195,7 +225,7 @@ def build_email(events_by_day, monday, friday, count):
     {days_html if days_html else
      '<div style="margin-top:24px;color:#666;">No qualifying earnings found this week.</div>'}
     <div style="margin-top:30px;font-size:12px;color:#aaa;">
-      Data: Financial Modeling Prep. Times shown are the US session (BMO/AMC).</div>
+      Data: Finnhub. Times shown are the US session (BMO/AMC).</div>
   </div>
 </body></html>"""
 
@@ -215,25 +245,46 @@ def send_email(html, subject):
 
 # ---------------------------------- main ------------------------------------
 def main():
-    if not (FMP_API_KEY and GMAIL_ADDRESS and GMAIL_APP_PASSWORD):
-        sys.exit("Missing one of: FMP_API_KEY, GMAIL_ADDRESS, GMAIL_APP_PASSWORD.")
+    if not (FINNHUB_API_KEY and GMAIL_ADDRESS and GMAIL_APP_PASSWORD):
+        sys.exit("Missing one of: FINNHUB_API_KEY, GMAIL_ADDRESS, GMAIL_APP_PASSWORD.")
 
     monday, friday = current_week_mon_fri()
-    universe = get_universe()
-    print(f"Universe above {money(MIN_MARKET_CAP)}: {len(universe)} companies")
 
     earnings = get_earnings(monday.isoformat(), friday.isoformat())
     print(f"Raw earnings events this week: {len(earnings)}")
 
-    events_by_day, count = {}, 0
+    # Keep in-window events and collect the unique tickers we need caps for.
+    events, symbols = [], []
     for e in earnings:
         sym, day = e.get("symbol"), e.get("date")
-        if not sym or not day or sym not in universe:
+        if not sym or not day:
             continue
         dt = datetime.strptime(day, "%Y-%m-%d").date()
         if not (monday <= dt <= friday):
             continue
-        bucket, clock = timing_bucket(e.get("time"))
+        events.append((sym, dt, e.get("hour")))
+        if sym not in symbols:
+            symbols.append(sym)
+
+    # Build the market-cap "universe" one profile at a time (no bulk screener on
+    # the free tier), pacing calls to stay under Finnhub's 60/min limit.
+    print(f"Looking up market caps for {len(symbols)} unique tickers...")
+    universe = {}
+    for i, sym in enumerate(symbols):
+        if i:
+            time.sleep(RATE_LIMIT_SLEEP)
+        prof = get_profile(sym)
+        if not prof:
+            continue
+        if prof["cap"] >= MIN_MARKET_CAP and is_target_exchange(prof["exchange"]):
+            universe[sym] = prof
+    print(f"Universe at/above {money(MIN_MARKET_CAP)}: {len(universe)} companies")
+
+    events_by_day, count = {}, 0
+    for sym, dt, hour in events:
+        if sym not in universe:
+            continue
+        bucket, clock = timing_bucket(hour)
         events_by_day.setdefault(dt, {"bmo": [], "amc": [], "dmh": [], "tbd": []})
         events_by_day[dt][bucket].append({
             "symbol": sym,
