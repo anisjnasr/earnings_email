@@ -171,16 +171,22 @@ BUCKET_SUFFIX = {"bmo": " - BMO", "amc": " - AMC", "dmh": " - DMH", "tbd": ""}
 
 
 def quick_add_link(symbol, dt, bucket):
-    """Build a todoist:// link that opens the app's quick-add, pre-filled.
+    """Build Todoist's mobile-compatible add-task deep link.
 
-    Uses Todoist natural-language syntax: the date sets the due date (no time),
-    'p1' sets Priority 1, and '#Project' routes it. The session (BMO/AMC/DMH) is
-    part of the task *name*, not the due time."""
+    Android/iOS use todoist://addtask (openquickadd is desktop-only). The mobile
+    scheme accepts separate content, date, and priority parameters. Todoist's
+    URL API represents client Priority 1 as priority=4."""
     date_txt = f"{dt.strftime('%b')} {dt.day} {dt.year}"      # e.g. "Jul 24 2026"
     suffix = BUCKET_SUFFIX.get(bucket, "")
     proj = f" #{PROJECT_NAME}" if PROJECT_NAME else ""
-    content = f"{symbol} Earnings{suffix} {date_txt} p1{proj}"
-    return "todoist://openquickadd?content=" + urllib.parse.quote(content, safe="")
+    content = f"{symbol} Earnings{suffix}{proj}"
+    return (
+        "todoist://addtask?content="
+        + urllib.parse.quote(content, safe="")
+        + "&date="
+        + urllib.parse.quote(date_txt, safe="")
+        + "&priority=4"
+    )
 
 
 # ----------------------------- build the email ------------------------------
@@ -224,14 +230,17 @@ def section_html(label, events):
     events.sort(key=lambda e: e["cap"], reverse=True)
     rows = "".join(row_html(e) for e in events)
     return f"""
-      <div style="margin:18px 0 8px;">
-        <span style="display:inline-block;background:{ACCENT};color:#fff;
-                     font-size:12px;font-weight:800;letter-spacing:.8px;
-                     text-transform:uppercase;padding:6px 12px;border-radius:6px;
-                     box-shadow:0 1px 2px rgba(0,0,0,.12);">{label}</span>
-      </div>
-      <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
-             style="border-collapse:collapse;">{rows}</table>"""
+      <details open style="margin:14px 0 0 16px;">
+        <summary style="font-size:14px;font-weight:700;color:#171717;
+                        border-bottom:1px solid {ACCENT};padding:7px 0 6px;
+                        cursor:pointer;">{label}
+          <span style="font-size:12px;font-weight:600;color:#999;">
+            &nbsp;({len(events)})
+          </span>
+        </summary>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+               style="border-collapse:collapse;">{rows}</table>
+      </details>"""
 
 
 def build_email(events_by_day, start, end, count, heading):

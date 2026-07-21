@@ -166,30 +166,33 @@ Build a dict of qualifiers: `universe[symbol] = {"cap": dollars, "name": name,
 
 ## 8. The Todoist quick-add link (most important detail)
 
-Each stock row contains an anchor whose `href` is a **Todoist quick-add URL**.
-Tapping it opens the Todoist app's Quick Add panel **pre-filled but not
+Each stock row contains an anchor whose `href` is Todoist's **mobile add-task
+URL**. Tapping it opens the Todoist app's add-task panel **pre-filled but not
 submitted** — the user taps Todoist's own add button to confirm.
 
 **Format:**
 ```
-todoist://openquickadd?content=<URL-ENCODED CONTENT>
+todoist://addtask?content=<ENCODED CONTENT>&date=<ENCODED DATE>&priority=4
 ```
 
 **Content string (before encoding):**
 ```
-{SYMBOL} Earnings[ - {SESSION}] {Mon} {D} {YYYY} p1 #{PROJECT_NAME}
+{SYMBOL} Earnings[ - {SESSION}] #{PROJECT_NAME}
 ```
-- Example: `NVDA Earnings - AMC Jul 24 2026 p1 #Earnings`
-- The date is written in **Todoist natural-language date syntax** (no time of
-  day) so Todoist sets an all-day due date. Include the year to avoid ambiguity.
+- Example content: `NVDA Earnings - AMC #Earnings`
+- Example date: `Jul 24 2026`
+- `todoist://addtask` is Todoist's documented Android/iOS scheme.
+  `todoist://openquickadd` is desktop-only and must not be used for these links.
+- `date` uses Todoist natural-language date syntax (no time), producing an
+  all-day due date. Include the year to avoid ambiguity.
 - `SESSION` is the uppercased bucket (`BMO`/`AMC`/`DMH`) appended to the task
   **name**; omit the ` - {SESSION}` segment for the `tbd` bucket.
-- `p1` sets **Priority 1** (highest) on every task.
+- Todoist's URL API uses `priority=4` for client-facing **Priority 1**.
 - Note the capital **E** in `Earnings`.
 - If `PROJECT_NAME` is `""`, omit the `#...` segment → task goes to Inbox.
-- URL-encode the **entire** content with `urllib.parse.quote(content, safe="")`
-  so spaces become `%20` and `#` becomes `%23` (critical — an unencoded `#`
-  would be treated as a URL fragment and break the project assignment).
+- URL-encode `content` and `date` separately with
+  `urllib.parse.quote(value, safe="")`, so spaces become `%20` and `#` becomes
+  `%23` (an unencoded `#` becomes a URL fragment and breaks project assignment).
 
 No Todoist token, no API call, no network request from the script for this step.
 
@@ -222,8 +225,10 @@ No Todoist token, no API call, no network request from the script for this step.
     shows the day expanded. Default `open` keeps every client readable.
   - Then, in this order, only for non-empty buckets:
     `Before open (BMO)`, `After close (AMC)`, `During hours`, `Time not confirmed`.
-  - Each bucket label is an emphasized **accent-filled pill** (white uppercase
-    bold text on the accent colour) so BMO/AMC stand out, followed by rows.
+  - Each bucket is another `<details open>` block, indented 16px beneath its
+    date. Its `<summary>` matches the date-header design at a smaller size, has
+    an accent bottom border and event count, and collapses/expands its rows.
+    The table is inside the same indented block so it aligns with its bucket.
 - **Each row** = a 3-column table row:
   1. Ticker (bold) with company name beneath it in small grey text.
   2. Market cap, right-aligned (`$X.XB`, or `$X.XXT` at/above a trillion).
@@ -288,7 +293,9 @@ No Todoist token, no API call, no network request from the script for this step.
 
 ## 14. Known gotchas (call these out to Cursor)
 - **Do not** use the Todoist REST/Sync API or any `Bearer` token for adding
-  tasks — the whole design relies on the `todoist://openquickadd` scheme.
+  tasks — the whole design relies on Todoist's `todoist://` URL scheme.
+- Use `todoist://addtask` for Android/iOS email links. The similarly named
+  `todoist://openquickadd` endpoint is desktop-only.
 - **Do not** import `requests` or any pip package inside the script; stdlib only.
 - The `#project` in the quick-add content **must be URL-encoded** (`%23`).
 - Gmail SMTP needs an **App Password**, which requires **2-Step Verification**;
