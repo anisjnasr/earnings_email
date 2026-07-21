@@ -1,0 +1,28 @@
+name: Earnings email
+
+on:
+  schedule:
+    - cron: "0 5 * * 1-5"   # 05:00 UTC on weekdays (~9:00am Gulf time)
+  workflow_dispatch:         # adds a "Run workflow" button for manual testing
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install timezone data
+        run: pip install tzdata
+
+      - name: Send earnings email
+        env:
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          # Optional: set RECIPIENT as a secret to send somewhere other than yourself.
+          RECIPIENT: ${{ secrets.RECIPIENT }}
+        run: python earnings_email.py
