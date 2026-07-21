@@ -22,9 +22,9 @@ so I choose which handful to actually add. Nothing is added automatically.
 ---
 
 ## 2. Hard constraints (do not deviate)
-- **Language:** Python 3.12, **standard library only** (`urllib`, `json`, `smtplib`,
-  `email`, `ssl`, `datetime`, `zoneinfo`, `os`, `sys`). No `requests`, no
-  third-party packages in the script.
+- **Language:** Python 3.12, **standard library only** (`urllib`, `json`, `time`,
+  `smtplib`, `email`, `ssl`, `datetime`, `zoneinfo`, `os`, `sys`). No `requests`,
+  no third-party packages in the script.
 - **No server / no always-on process.** The whole thing runs as a scheduled
   **GitHub Actions** job (cron). This is why the "add" action must be a link the
   email client opens, not an API call the email makes.
@@ -34,6 +34,13 @@ so I choose which handful to actually add. Nothing is added automatically.
 - **Email is sent through Gmail SMTP** using an App Password (not OAuth, not the
   account password).
 - All secrets come from environment variables. **Never hard-code keys.**
+
+> **Data source note (v1.1):** The project originally targeted Financial Modeling
+> Prep (FMP), but FMP retired its legacy `/api/v3/` endpoints for keys created
+> after 2025-08-31 (they return `403`), and its stable screener + earnings
+> calendar are paid-only (`402`). v1 therefore uses **Finnhub's free tier**
+> instead. The data-fetch functions remain isolated so the provider can be
+> swapped again if needed.
 
 ---
 
@@ -52,13 +59,17 @@ so I choose which handful to actually add. Nothing is added automatically.
 ## 4. Environment variables (GitHub repo secrets)
 | Name                 | Required | Purpose                                             |
 |----------------------|----------|-----------------------------------------------------|
-| `FMP_API_KEY`        | yes      | Financial Modeling Prep API key (the data source)   |
+| `FINNHUB_API_KEY`    | yes      | Finnhub API key (the data source; free tier is fine)|
 | `GMAIL_ADDRESS`      | yes      | Gmail address that sends (and by default receives)  |
 | `GMAIL_APP_PASSWORD` | yes      | 16-char Gmail App Password (2-Step Verification on) |
 | `RECIPIENT`          | no       | Override the recipient; defaults to `GMAIL_ADDRESS` |
 
 The script must exit with a clear error message if any of the three required
 variables is missing.
+
+> Note: the workflow always defines `RECIPIENT` as an env var (empty string when
+> the secret is unset), so the script coalesces an empty `RECIPIENT` to
+> `GMAIL_ADDRESS` rather than relying on a plain `.get(default=...)`.
 
 ---
 
@@ -72,41 +83,48 @@ BMO_CLOCK      = "9:00am"        # task time for before-open reporters
 AMC_CLOCK      = "4:30pm"        # task time for after-close reporters
 DMH_CLOCK      = "12:00pm"       # task time for during-hours reporters
 ACCENT         = "#3BBFCF"       # button colour in the email
+RATE_LIMIT_SLEEP = 1.1           # seconds between Finnhub per-symbol lookups
 ```
+`EXCHANGES` is used to filter Finnhub's profile `exchange` field (it returns full
+names like `"NASDAQ NMS - GLOBAL MARKET"` and `"NEW YORK STOCK EXCHANGE, INC."`).
 All market-time reasoning uses the `America/New_York` timezone via `zoneinfo`
 (handles US daylight saving automatically).
 
 ---
 
-## 6. Data source — Financial Modeling Prep (FMP)
+## 6. Data source — Finnhub (free tier)
 
-### 6a. Universe (market-cap screen) — one call
-```
-GET https://financialmodelingprep.com/api/v3/stock-screener
-    ?marketCapMoreThan={MIN_MARKET_CAP}
-    &exchange={EXCHANGES}
-    &isActivelyTrading=true
-    &limit=3000
-    &apikey={FMP_API_KEY}
-```
-Response: JSON array of objects. Use these fields per row:
-`symbol` (str), `companyName` (str), `marketCap` (number).
-Build a dict: `universe[symbol] = {"cap": marketCap, "name": companyName}`.
+Finnhub's free tier has **no bulk market-cap screener**, so the flow is inverted
+relative to a screener-first design: fetch the week's earnings calendar in one
+call, then look up each unique ticker's market cap individually. The free tier
+allows **60 requests/minute (US coverage, 1-month calendar range)**, so per-symbol
+lookups are paced by `RATE_LIMIT_SLEEP` to avoid a `429`.
 
-### 6b. Earnings calendar — one call
+### 6a. Earnings calendar — one call
 ```
-GET https://financialmodelingprep.com/api/v3/earning_calendar
-    ?from={monday}&to={friday}&apikey={FMP_API_KEY}
+GET https://finnhub.io/api/v1/calendar/earnings
+    ?from={monday}&to={friday}&token={FINNHUB_API_KEY}
 ```
-Dates are `YYYY-MM-DD`. Response: JSON array. Use per row:
-`symbol` (str), `date` (str `YYYY-MM-DD`), `time` (str).
-The `time` field is one of `"bmo"`, `"amc"`, `"dmh"`, `""`, or occasionally a
+Dates are `YYYY-MM-DD`. Response: JSON object `{"earningsCalendar": [ ... ]}`.
+Use per row: `symbol` (str), `date` (str `YYYY-MM-DD`), `hour` (str).
+The `hour` field is one of `"bmo"`, `"amc"`, `"dmh"`, `""`, or occasionally a
 clock string like `"08:30"`.
 
-> Note: FMP's free tier may gate `earning_calendar`. If the call returns an error
-> or an empty/premium message, surface it clearly in the log. (Fallback provider
-> = Finnhub; out of scope for v1 but keep the data-fetch functions isolated so a
-> swap is easy.)
+### 6b. Market cap + name (per unique ticker) — one call each
+```
+GET https://finnhub.io/api/v1/stock/profile2
+    ?symbol={symbol}&token={FINNHUB_API_KEY}
+```
+Response: JSON object. Use `marketCapitalization` (number, **in millions of
+USD** — multiply by 1e6 for raw dollars), `name` (str), and `exchange` (str).
+An empty `{}` or missing/zero market cap means "skip this symbol".
+Build a dict of qualifiers: `universe[symbol] = {"cap": dollars, "name": name,
+"exchange": exchange}` for symbols whose cap ≥ `MIN_MARKET_CAP` and whose
+`exchange` matches `EXCHANGES`.
+
+> Note: Finnhub reports API problems as a JSON object with an `error` key;
+> surface it clearly in the log. Keep the data-fetch functions isolated so a
+> future provider swap is easy.
 
 ---
 
@@ -115,22 +133,26 @@ clock string like `"08:30"`.
 1. **Compute the week window.** Get "today" in `America/New_York`. If it's
    Saturday or Sunday, roll forward to next Monday. `monday = today - weekday`,
    `friday = monday + 4 days`. This is the Mon–Fri window shown in the email.
-2. **Fetch the universe** (6a). Log the count.
-3. **Fetch earnings** for `monday`→`friday` (6b). Log the raw count.
-4. **Filter + bucket.** For each earnings event:
-   - Skip if `symbol` not in `universe` (i.e. below the cap or not on the target
-     exchanges).
-   - Parse `date`; skip if outside `[monday, friday]`.
-   - Map `time` → bucket + clock via the table below.
+2. **Fetch earnings** for `monday`→`friday` (6a). Log the raw count.
+3. **Collect in-window events + unique tickers.** For each earnings row: skip if
+   no `symbol`/`date`; parse `date` and skip if outside `[monday, friday]`;
+   remember `(symbol, date, hour)` and the set of unique symbols.
+4. **Build the market-cap universe** (6b). For each unique ticker (paced by
+   `RATE_LIMIT_SLEEP`), fetch its profile; keep it if `cap ≥ MIN_MARKET_CAP` and
+   its exchange matches `EXCHANGES`. Log how many tickers were looked up and how
+   many qualified.
+5. **Filter + bucket.** For each in-window event:
+   - Skip if `symbol` not in `universe` (below the cap or wrong exchange).
+   - Map `hour` → bucket + clock via the table below.
    - Append to `events_by_day[date][bucket]` with `{symbol, name, cap, dt, clock}`.
    - Increment a running `count`.
-5. **Sort** each bucket's list by `cap` descending (biggest company first).
-6. **Build the HTML email** (section 8).
-7. **Send** via Gmail SMTP (section 9).
-8. **Log** the final qualifying count and "Email sent."
+6. **Sort** each bucket's list by `cap` descending (biggest company first).
+7. **Build the HTML email** (section 8).
+8. **Send** via Gmail SMTP (section 9).
+9. **Log** the final qualifying count and "Email sent."
 
-### Timing map (`time` field → bucket, clock)
-| Raw `time` value                         | Bucket | Clock used   |
+### Timing map (`hour` field → bucket, clock)
+| Raw `hour` value                         | Bucket | Clock used   |
 |------------------------------------------|--------|--------------|
 | `bmo`, `before market open`              | bmo    | `BMO_CLOCK`  |
 | `amc`, `after market close`              | amc    | `AMC_CLOCK`  |
@@ -195,32 +217,37 @@ No Todoist token, no API call, no network request from the script for this step.
   3. An **+ Add** button: accent background, white text, rounded, generous
      padding (tap target ≥ ~40px tall), `href` = the quick-add URL from §8.
 - Use **inline CSS only** (email clients strip `<style>` blocks unreliably).
-- Footer: tiny grey line crediting FMP and noting times are the US session.
+- Footer: tiny grey line crediting Finnhub and noting times are the US session.
 - If there are zero qualifying companies, show a friendly "No qualifying
   earnings found this week." message instead of empty tables.
 
 ---
 
 ## 11. GitHub Actions workflow (`.github/workflows/earnings.yml`)
-- Triggers: `schedule` cron `0 5 * * 1-5` (05:00 UTC weekdays ≈ 09:00 Gulf time)
-  **and** `workflow_dispatch` (manual "Run workflow" button for testing).
+- Triggers: `schedule` cron `0 4 * * 1-5` (04:00 UTC weekdays = 08:00 UAE time,
+  UTC+4, no DST) **and** `workflow_dispatch` (manual "Run workflow" button).
 - Job on `ubuntu-latest`:
   1. `actions/checkout@v4`
   2. `actions/setup-python@v5` with `python-version: "3.12"`
   3. `pip install tzdata` (ensures `zoneinfo` has the timezone database)
-  4. Run `python earnings_email.py` with `FMP_API_KEY`, `GMAIL_ADDRESS`,
+  4. Run `python earnings_email.py` with `FINNHUB_API_KEY`, `GMAIL_ADDRESS`,
      `GMAIL_APP_PASSWORD`, and `RECIPIENT` passed from `secrets` as `env`.
+
+> Runtime note: because each reporting ticker needs its own profile lookup, a
+> busy week (~500 tickers) takes several minutes per run at 60 req/min. This is
+> well within the Actions job timeout.
 
 ---
 
 ## 12. Error handling & edge cases
 - Missing required env var → `sys.exit` with a clear message.
-- FMP HTTP error or non-JSON body → let it raise; the Actions log shows it.
+- Finnhub HTTP error, non-JSON body, or a JSON `{"error": ...}` object → surface
+  it / let it raise; the Actions log shows it.
 - Empty earnings list or empty universe → still send a well-formed email
   (use the "no qualifying earnings" state if nothing qualifies).
-- A symbol in the earnings feed but not in the universe → silently skipped
-  (that's the market-cap filter doing its job).
-- Symbols with unusual `time` values → fall into the `tbd` bucket, all-day task.
+- A symbol in the earnings feed whose cap is below the cutoff, whose exchange is
+  off-target, or whose profile is empty → silently skipped.
+- Symbols with unusual `hour` values → fall into the `tbd` bucket, all-day task.
 - Duplicate-safety is **not** required: the email is a fresh view each day and
   the user manually picks what to add.
 
@@ -228,7 +255,8 @@ No Todoist token, no API call, no network request from the script for this step.
 
 ## 13. Acceptance criteria (how to verify)
 1. Manually triggering the workflow ("Run workflow") completes green and the log
-   prints the universe count, raw earnings count, qualifying count, "Email sent."
+   prints the raw earnings count, the ticker-lookup count, the universe count,
+   the qualifying count, and "Email sent."
 2. An email arrives at `RECIPIENT` within ~1 minute.
 3. The email shows the current Mon–Fri range and only companies ≥ $1B.
 4. Each day is split into BMO/AMC; rows are sorted biggest-cap first.
@@ -249,8 +277,14 @@ No Todoist token, no API call, no network request from the script for this step.
 - Use `smtp.gmail.com:465` with SSL (or `587` with STARTTLS) — plain/unencrypted
   connections are refused.
 - `zoneinfo` needs the tz database on the runner; the workflow installs `tzdata`.
-- Keep the two FMP fetches in their own functions so the data provider can be
+- Keep the Finnhub fetches in their own functions so the data provider can be
   swapped later without touching email/link logic.
+- Finnhub's `marketCapitalization` is in **millions of USD** — scale by 1e6.
+- Respect Finnhub's **60 req/min** free limit; pace per-symbol lookups.
+- Finnhub's `exchange` field uses full names (e.g. `"NASDAQ NMS - GLOBAL MARKET"`,
+  `"NEW YORK STOCK EXCHANGE, INC."`), so match on substrings, not `==`.
+- **FMP is not usable here:** legacy `/api/v3/` returns `403` for keys made after
+  2025-08-31, and the stable screener/earnings calendar are paid (`402`).
 
 ---
 
