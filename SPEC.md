@@ -14,7 +14,9 @@ instruction in this doc over any default Cursor would choose.
 ## 1. Purpose (plain English)
 Send two automated digests for US companies with market cap **at least $1B**:
 - A **weekly** email on Sunday morning covering the upcoming Monday–Friday.
-- A **daily** email Monday–Friday covering the current day and the next day.
+- A **daily** email Monday–Friday covering the prior trading day through
+  tomorrow (header/subject still show today–tomorrow; Monday’s prior day is
+  Friday).
 
 Group each list by day, and within each day split it into **Before-Open (BMO)**
 and **After-Close (AMC)**. Each company has a tap-to-add button; tapping it on
@@ -136,11 +138,14 @@ Build a dict of qualifiers: `universe[symbol] = {"cap": dollars, "name": name,
 1. **Select the mode + window.** The CLI accepts `weekly` or `daily`:
    - `weekly`: compute the upcoming/current Monday–Friday. On Sunday, roll
      forward to Monday so the Sunday email previews the coming trading week.
-   - `daily`: use today and tomorrow in `Asia/Dubai`, matching the UAE schedule.
-2. **Fetch earnings** for the selected inclusive window (6a). Log the raw count.
+   - `daily`: display today and tomorrow in `Asia/Dubai`, but **fetch** from the
+     prior trading day through tomorrow (Monday's prior day is Friday).
+2. **Fetch earnings** for the fetch window (6a). Log the raw count. Keep
+   Finnhub estimate/actual fields: `epsEstimate`, `epsActual`,
+   `revenueEstimate`, `revenueActual`.
 3. **Collect in-window events + unique tickers.** For each earnings row: skip if
-   no `symbol`/`date`; parse `date` and skip if outside `[start, end]`;
-   remember `(symbol, date, hour)` and the set of unique symbols.
+   no `symbol`/`date`; parse `date` and skip if outside the fetch window;
+   remember symbol/date/hour plus estimate/actual fields and the unique symbols.
 4. **Build the market-cap universe** (6b). For each unique ticker (paced by
    `RATE_LIMIT_SLEEP`), fetch its profile; keep it if `cap ≥ MIN_MARKET_CAP` and
    its exchange matches `EXCHANGES`. Log how many tickers were looked up and how
@@ -148,7 +153,9 @@ Build a dict of qualifiers: `universe[symbol] = {"cap": dollars, "name": name,
 5. **Filter + bucket.** For each in-window event:
    - Skip if `symbol` not in `universe` (below the cap or wrong exchange).
    - Map `hour` → bucket via the table below.
-   - Append to `events_by_day[date][bucket]` with `{symbol, name, cap, dt, bucket}`.
+   - Append to `events_by_day[date][bucket]` with
+     `{symbol, name, cap, dt, bucket, eps_estimate, eps_actual,
+     revenue_estimate, revenue_actual}`.
    - Increment a running `count`.
 6. **Sort** each bucket's list by `cap` descending (biggest company first).
 7. **Build the HTML email** (section 8).
@@ -242,12 +249,18 @@ No Todoist token, no API call, no network request from the script for this step.
     date. Its `<summary>` matches the date-header design at a smaller size, has
     an accent bottom border and event count, and collapses/expands its rows.
     The table is inside the same indented block so it aligns with its bucket.
-- **Each row** = a 3-column table row:
-  1. Ticker (bold) with company name beneath it in small grey text.
-  2. Market cap, right-aligned (`$X.XB`, or `$X.XXT` at/above a trillion).
-  3. A compact **`+` icon** button (no text): 40×40 accent square, white plus,
-     rounded and centered using an email-safe presentation table
-     (`align="center"`, `valign="middle"`), `href` = the quick-add URL from §8.
+- **Each row** = a table row with ticker on the left, metrics to its right on the
+  same line (`white-space:nowrap`), then market cap, then the `+` button:
+  1. Ticker (bold) with truncated company name beneath it.
+  2. Metrics (right of ticker):
+     - Reported: `Sales E/A $est / $act +x% - EPS E/A $est / $act +x%`
+     - Not yet reported: `Sales E $est - EPS E $est`
+     - Surprise % = `(Actual ÷ Est) − 1`; beat green (`#0F7B3A`), miss red
+       (`#B42318`). Omit a metric if Finnhub has no value for it.
+  3. Market cap, right-aligned (`$X.XB`, or `$X.XXT` at/above a trillion).
+  4. A compact **`+` icon** button (no text): 40×40 accent square, white plus,
+     centered with an email-safe presentation table, `href` = §8.
+- Daily emails mark the prior trading day with a small grey **Prior day** badge.
 - Use **inline CSS only** (email clients strip `<style>` blocks unreliably).
 - Footer: tiny grey line crediting Finnhub and noting times are the US session.
 - If there are zero qualifying companies, show a friendly
@@ -295,8 +308,10 @@ No Todoist token, no API call, no network request from the script for this step.
    sets of counts, and two "Email sent." lines.
 2. Two emails arrive at `RECIPIENT`: one weekly and one daily.
 3. The weekly email shows the upcoming/current Mon–Fri range; the daily email
-   shows today and tomorrow. Both contain only companies ≥ $1B.
-4. Each day is split into BMO/AMC; rows are sorted biggest-cap first.
+   header shows today–tomorrow and includes a prior-trading-day section (Monday
+   → Friday) with estimate/actual metrics. Both contain only companies ≥ $1B.
+4. Each day is split into BMO/AMC; rows are sorted biggest-cap first; reported
+   rows show Sales/EPS E/A with colored surprise %.
 5. On a phone with the Todoist app installed, tapping **+** opens Todoist Quick
    Add with `{SYMBOL} Earnings - {SESSION}`, the correct all-day date, Priority 1,
    and the `Earnings` project pre-filled.
